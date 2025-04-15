@@ -1,75 +1,57 @@
 const { db } = require('../config/firebase');
 
-// Start a monitoring session
-const startMonitoring = async (req, res) => {
+// Start a monitoring session when student begins exam
+const startMonitoringSession = async (req, res) => {
   try {
-    const { examId, studentId } = req.body;
-    const teacherId = req.user.uid;
+    const { examId } = req.params;
+    const studentId = req.user.uid;
+    const { streamUrl, peerId } = req.body;
 
-    // Check if exam exists and belongs to the teacher
-    const examRef = db.ref(`exams/${examId}`);
-    const examSnapshot = await examRef.once('value');
+    // Verify exam exists and is active
+    const examSnapshot = await db.ref(`exams/${examId}`).once('value');
     const exam = examSnapshot.val();
 
     if (!exam) {
       return res.status(404).json({ error: 'Exam not found' });
     }
 
-    if (exam.teacherId !== teacherId) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
+    const now = new Date();
+    const startTime = new Date(exam.startTime);
+    const endTime = new Date(exam.endTime);
 
-    // Check if student is enrolled in the exam
-    if (!exam.studentIds.includes(studentId)) {
-      return res.status(403).json({ error: 'Student not enrolled in this exam' });
-    }
-
-    // Check if there's an active exam submission
-    const submissionsRef = db.ref('examSubmissions');
-    const submissionsSnapshot = await submissionsRef
-      .orderByChild('examId')
-      .equalTo(examId)
-      .once('value');
-    
-    const submissions = submissionsSnapshot.val() || {};
-    const activeSubmission = Object.values(submissions).find(
-      sub => sub.studentId === studentId && sub.status === 'in-progress'
-    );
-
-    if (!activeSubmission) {
-      return res.status(400).json({ error: 'No active exam submission found' });
+    if (now < startTime || now > endTime) {
+      return res.status(400).json({ error: 'Exam is not currently active' });
     }
 
     // Create or update monitoring session
-    const sessionsRef = db.ref('monitoringSessions');
-    const newSessionRef = sessionsRef.push();
-    
+    const sessionRef = db.ref('monitoringSessions').push();
     const sessionData = {
-      id: newSessionRef.key,
+      id: sessionRef.key,
       examId,
       studentId,
-      teacherId,
+      streamUrl,
+      peerId,
       status: 'active',
       violations: 0,
-      lastViolationTime: null,
-      peerId: null,
-      aiFlags: []
+      lastViolation: null,
+      startedAt: new Date().toISOString(),
+      teacherId: exam.teacherId
     };
 
-    await newSessionRef.set(sessionData);
+    await sessionRef.set(sessionData);
 
     res.status(201).json(sessionData);
   } catch (error) {
-    console.error('Error starting monitoring:', error);
-    res.status(500).json({ error: 'Failed to start monitoring' });
+    console.error('Error starting monitoring session:', error);
+    res.status(500).json({ error: 'Failed to start monitoring session' });
   }
 };
 
-// Stop a monitoring session
-const stopMonitoringSession = async (req, res) => {
+// Update monitoring session with violations
+const updateMonitoringSession = async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const teacherId = req.user.uid;
+    const { violations, status } = req.body;
 
     const sessionRef = db.ref(`monitoringSessions/${sessionId}`);
     const sessionSnapshot = await sessionRef.once('value');
@@ -79,19 +61,18 @@ const stopMonitoringSession = async (req, res) => {
       return res.status(404).json({ error: 'Monitoring session not found' });
     }
 
-    if (session.teacherId !== teacherId) {
-      return res.status(403).json({ error: 'Unauthorized to stop this session' });
-    }
+    const updates = {
+      violations: session.violations + (violations || 0),
+      lastViolation: new Date().toISOString(),
+      status: status || session.status
+    };
 
-    await sessionRef.update({
-      status: 'ended',
-      endTime: new Date().toISOString()
-    });
+    await sessionRef.update(updates);
 
-    res.status(200).json({ message: 'Monitoring session stopped' });
+    res.status(200).json({ ...session, ...updates });
   } catch (error) {
-    console.error('Error stopping monitoring session:', error);
-    res.status(500).json({ error: 'Failed to stop monitoring session' });
+    console.error('Error updating monitoring session:', error);
+    res.status(500).json({ error: 'Failed to update monitoring session' });
   }
 };
 
@@ -99,52 +80,56 @@ const stopMonitoringSession = async (req, res) => {
 const getActiveSessions = async (req, res) => {
   try {
     const teacherId = req.user.uid;
-    const { examId } = req.query;
 
-    // First get all monitoring sessions
-    const sessionsRef = db.ref('monitoringSessions');
-    const sessionsSnapshot = await sessionsRef.once('value');
+    // Get all active sessions for this teacher
+    const sessionsSnapshot = await db.ref('monitoringSessions')
+      .orderByChild('teacherId')
+      .equalTo(teacherId)
+      .once('value');
+
     const sessions = sessionsSnapshot.val() || {};
+    const activeSessions = [];
 
-    // Filter sessions in memory
-    const activeSessions = Object.entries(sessions)
-      .filter(([_, session]) => {
-        // Filter by teacher ID and status
-        const isTeacherMatch = session.teacherId === teacherId;
-        const isActive = session.status === 'active';
-        const isExamMatch = !examId || session.examId === examId;
-        
-        return isTeacherMatch && isActive && isExamMatch;
-      })
-      .map(async ([id, session]) => {
+    // Get current time to check if exam is still active
+    const now = new Date();
+
+    for (const [sessionId, session] of Object.entries(sessions)) {
+      // Get exam details to check if it's still active
+      const examSnapshot = await db.ref(`exams/${session.examId}`).once('value');
+      const exam = examSnapshot.val();
+
+      if (!exam) continue;
+
+      const startTime = new Date(exam.startTime);
+      const endTime = new Date(exam.endTime);
+
+      // Only include sessions for active exams
+      if (now >= startTime && now <= endTime) {
         // Get student details
         const studentSnapshot = await db.ref(`users/${session.studentId}`).once('value');
         const student = studentSnapshot.val();
-        
-        return {
-          id,
+
+        activeSessions.push({
+          id: sessionId,
           ...session,
           studentName: student?.name || 'Unknown Student',
-          studentEmail: student?.email || ''
-        };
-      });
+          examTitle: exam.title,
+          examEndTime: exam.endTime
+        });
+      }
+    }
 
-    // Wait for all student details to be fetched
-    const sessionsWithStudentDetails = await Promise.all(activeSessions);
-
-    res.status(200).json(sessionsWithStudentDetails);
+    res.status(200).json(activeSessions);
   } catch (error) {
     console.error('Error getting active sessions:', error);
     res.status(500).json({ error: 'Failed to get active sessions' });
   }
 };
 
-// Update student's WebRTC peer ID
-const updatePeerId = async (req, res) => {
+// End monitoring session
+const endMonitoringSession = async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { peerId } = req.body;
-    const studentId = req.user.uid;
 
     const sessionRef = db.ref(`monitoringSessions/${sessionId}`);
     const sessionSnapshot = await sessionRef.once('value');
@@ -154,61 +139,26 @@ const updatePeerId = async (req, res) => {
       return res.status(404).json({ error: 'Monitoring session not found' });
     }
 
-    if (session.studentId !== studentId) {
-      return res.status(403).json({ error: 'Unauthorized to update this session' });
+    // Verify the request is from the student who started the session
+    if (session.studentId !== req.user.uid) {
+      return res.status(403).json({ error: 'Unauthorized to end this session' });
     }
-
-    await sessionRef.update({ peerId });
-
-    res.status(200).json({ message: 'Peer ID updated successfully' });
-  } catch (error) {
-    console.error('Error updating peer ID:', error);
-    res.status(500).json({ error: 'Failed to update peer ID' });
-  }
-};
-
-// Report a violation
-const reportViolation = async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const { type, description, timestamp } = req.body;
-    const studentId = req.user.uid;
-
-    const sessionRef = db.ref(`monitoringSessions/${sessionId}`);
-    const sessionSnapshot = await sessionRef.once('value');
-    const session = sessionSnapshot.val();
-
-    if (!session) {
-      return res.status(404).json({ error: 'Monitoring session not found' });
-    }
-
-    if (session.studentId !== studentId) {
-      return res.status(403).json({ error: 'Unauthorized to report violations' });
-    }
-
-    const violation = {
-      type,
-      description,
-      timestamp: timestamp || new Date().toISOString()
-    };
 
     await sessionRef.update({
-      violations: session.violations + 1,
-      lastViolationTime: new Date().toISOString(),
-      aiFlags: [...(session.aiFlags || []), violation]
+      status: 'ended',
+      endedAt: new Date().toISOString()
     });
 
-    res.status(200).json({ message: 'Violation reported successfully' });
+    res.status(200).json({ message: 'Monitoring session ended successfully' });
   } catch (error) {
-    console.error('Error reporting violation:', error);
-    res.status(500).json({ error: 'Failed to report violation' });
+    console.error('Error ending monitoring session:', error);
+    res.status(500).json({ error: 'Failed to end monitoring session' });
   }
 };
 
 module.exports = {
-  startMonitoring,
-  stopMonitoringSession,
+  startMonitoringSession,
+  updateMonitoringSession,
   getActiveSessions,
-  updatePeerId,
-  reportViolation
+  endMonitoringSession
 }; 

@@ -3,7 +3,7 @@ const serviceAccount = require("./serviceAccountKey.json");
 require("dotenv").config({ path: "../../.env" });
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DATABASE_URL
+  databaseURL: "https://proctored-exam-8b53b-default-rtdb.firebaseio.com/"
 });
 
 const db = admin.database();

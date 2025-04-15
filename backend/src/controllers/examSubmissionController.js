@@ -480,79 +480,6 @@ const getStudentGrades = async (req, res) => {
   }
 };
 
-// Create a new exam submission
-const createExamSubmission = async (req, res) => {
-  try {
-    const { examId } = req.body;
-    const studentId = req.user.uid;
-
-    // Check if exam exists and is active
-    const examRef = db.ref(`exams/${examId}`);
-    const examSnapshot = await examRef.once('value');
-    const exam = examSnapshot.val();
-
-    if (!exam) {
-      return res.status(404).json({ error: 'Exam not found' });
-    }
-
-    // Check if student is enrolled in the exam
-    if (!exam.studentIds.includes(studentId)) {
-      return res.status(403).json({ error: 'Student not enrolled in this exam' });
-    }
-
-    // Check if submission already exists
-    const submissionsRef = db.ref('examSubmissions');
-    const existingSubmission = await submissionsRef
-      .orderByChild('examId')
-      .equalTo(examId)
-      .once('value');
-
-    const submissions = existingSubmission.val() || {};
-    const studentSubmission = Object.values(submissions).find(
-      sub => sub.studentId === studentId
-    );
-
-    if (studentSubmission) {
-      return res.status(400).json({ error: 'Exam already started' });
-    }
-
-    // Create new submission
-    const newSubmissionRef = submissionsRef.push();
-    const submissionData = {
-      id: newSubmissionRef.key,
-      examId,
-      studentId,
-      status: 'in-progress',
-      lastSavedAt: new Date().toISOString()
-    };
-
-    await newSubmissionRef.set(submissionData);
-
-    // Create monitoring session
-    const sessionsRef = db.ref('monitoringSessions');
-    const newSessionRef = sessionsRef.push();
-    
-    const sessionData = {
-      id: newSessionRef.key,
-      examId,
-      studentId,
-      teacherId: exam.teacherId,
-      status: 'active',
-      violations: 0,
-      lastViolationTime: null,
-      peerId: null,
-      aiFlags: []
-    };
-
-    await newSessionRef.set(sessionData);
-
-    res.status(201).json(submissionData);
-  } catch (error) {
-    console.error('Error creating exam submission:', error);
-    res.status(500).json({ error: 'Failed to create exam submission' });
-  }
-};
-
 module.exports = {
   getStudentExams,
   getStudentExam,
@@ -560,6 +487,5 @@ module.exports = {
   saveExamProgress,
   getTeacherExamSubmission,
   saveExamGrades,
-  getStudentGrades,
-  createExamSubmission
+  getStudentGrades
 }; 
