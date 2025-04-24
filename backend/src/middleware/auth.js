@@ -7,8 +7,13 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ error: 'Unauthorized - No token provided' });
     }
 
+    console.log('Authorization Header:', authHeader);
+
     const token = authHeader.split('Bearer ')[1];
+    console.log('Extracted Token:', token);
+
     const decodedToken = await auth.verifyIdToken(token);
+    console.log('Decoded Token:', decodedToken);
 
     req.user = decodedToken;
     next();
@@ -25,9 +30,11 @@ const checkRole = (role) => {
       const user = req.user;
       const userRecord = await auth.getUser(user.uid);
       const customClaims = userRecord.customClaims || {};
-      console.log(customClaims);
+      console.log('User Record:', userRecord);
+      console.log('Custom Claims:', customClaims);
       
       if (customClaims.role !== role) {
+        console.log('Role Mismatch:', customClaims.role, 'Expected:', role);
         return res.status(403).json({ error: 'Forbidden - Insufficient permissions' });
       }
       next();

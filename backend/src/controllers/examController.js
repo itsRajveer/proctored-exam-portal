@@ -1,4 +1,5 @@
 const { db } = require('../config/firebase');
+const { parseMCQDocument } = require('../utils/mcqParser');
 
 // Create a new exam
 const createExam = async (req, res) => {
@@ -265,6 +266,27 @@ const gradeSubmission = async (req, res) => {
   }
 };
 
+const uploadMCQFile = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const questions = await parseMCQDocument(req.file.buffer);
+    
+    res.status(200).json({
+      success: true,
+      questions: questions
+    });
+  } catch (error) {
+    console.error('Error processing MCQ file:', error);
+    res.status(500).json({ 
+      error: 'Failed to process MCQ file',
+      details: error.message 
+    });
+  }
+};
+
 module.exports = {
   createExam,
   getTeacherExams,
@@ -272,5 +294,6 @@ module.exports = {
   updateExam,
   deleteExam,
   getExamSubmissions,
-  gradeSubmission
+  gradeSubmission,
+  uploadMCQFile
 }; 
